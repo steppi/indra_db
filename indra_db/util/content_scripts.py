@@ -2,10 +2,51 @@ __all__ = ['get_stmts_with_agent_text_like', 'get_text_content_from_stmt_ids']
 
 from sqlalchemy import text
 from functools import lru_cache
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 from .constructors import get_primary_db
 from .helpers import unpack, _get_trids
+
+
+def get_agent_texts_for_pmids(pmids, db=None):
+    """Return list of raw agent text extracted from a list of pmids
+
+    Parameters
+    ----------
+    pmids : list
+        pmids as list of strings
+
+    Returns
+    -------
+    dict
+        Dictionary giving counts of raw agent texts extracted from texts
+        with the given pmids.
+    """
+    if db is None:
+        db = get_primary_db()
+    pmids = tuple(pmids)
+    query = """
+            SELECT
+                ra.db_id
+            FROM
+                text_ref tr
+            JOIN
+                raw_stmt_ref_link link
+            ON
+                link.text_ref_id = tr.id
+            JOIN
+                raw_agents ra
+            ON
+                ra.stmt_id = link.stmt_id
+            WHERE
+                ra.db_name LIKE 'TEXT'
+            AND
+                ra.db_id IS NOT NULL
+            AND
+                pmid IN :pmids
+            """
+    res = db.session.execute(query, {'pmids': pmids})
+    return dict(Counter([x[0] for x in res]))
 
 
 def get_stmts_with_agent_text_like(pattern, filter_genes=False,
