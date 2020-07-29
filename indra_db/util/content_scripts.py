@@ -27,7 +27,7 @@ def get_agent_texts_for_pmids(pmids, db=None):
     pmids = tuple(pmids)
     query = """
             SELECT
-                ra.db_id
+                tr.pmid, ARRAY_AGG(ra.db_id)
             FROM
                 text_ref tr
             JOIN
@@ -43,10 +43,12 @@ def get_agent_texts_for_pmids(pmids, db=None):
             AND
                 ra.db_id IS NOT NULL
             AND
-                pmid IN :pmids
+                tr.pmid IN :pmids
+            GROUP BY
+                pmid
             """
-    res = db.session.execute(query, {'pmids': pmids})
-    return dict(Counter([x[0] for x in res]))
+    res = db.session.execute(text(query), {'pmids': pmids})
+    return {pmid: dict(Counter(agent_texts)) for pmid, agent_texts in res}
 
 
 def get_stmts_with_agent_text_like(pattern, filter_genes=False,
@@ -395,11 +397,14 @@ def _get_text_content(content_identifiers, db=None):
                    AND tc.source = ids.source
                    AND tc.format = ids.format
                    AND tc.text_type = ids.text_type
+               WHERE
+                   content IS NOT NULL
             """ % id_str
 
     res = db.session.execute(text(query), params)
     return {(trid, source, format, text_type): unpack(content)
             for trid, source, format, text_type, content in res}
+
 
 
 def get_text_content_from_text_refs(text_refs, db=None, use_cache=True):
