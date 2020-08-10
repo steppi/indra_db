@@ -109,6 +109,26 @@ def get_stmts_with_agent_text_like(pattern, filter_genes=False,
     return dict(output)
 
 
+def get_agent_stmt_counts(agent_texts, db=None):
+    if db is None:
+        db = get_primary_db()
+    query = """
+            SELECT
+                db_id, Count(stmt_id)
+            FROM 
+                raw_agents
+            WHERE
+                db_name IN :agent_texts
+            AND
+                stmt_id IS NOT NULL
+            GROUPBY
+                db_id
+            """
+    res = db.session.execute(text(query), {'agent_texts': agent_text})
+    return {agent_text: count for agent_text, count in res}
+            
+            
+            
 def get_stmts_with_agent_text_in(agent_texts, filter_genes=False, db=None):
     """Get statement ids with agent with rawtext in list
 
