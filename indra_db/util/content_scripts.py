@@ -112,19 +112,22 @@ def get_stmts_with_agent_text_like(pattern, filter_genes=False,
 def get_agent_stmt_counts(agent_texts, db=None):
     if db is None:
         db = get_primary_db()
+    agent_texts = tuple(set(agent_texts))
     query = """
             SELECT
                 db_id, Count(stmt_id)
             FROM 
                 raw_agents
             WHERE
-                db_name IN :agent_texts
+                db_name LIKE 'TEXT'
+            AND
+                db_id IN :agent_texts
             AND
                 stmt_id IS NOT NULL
-            GROUPBY
+            GROUP BY
                 db_id
             """
-    res = db.session.execute(text(query), {'agent_texts': agent_text})
+    res = db.session.execute(text(query), {'agent_texts': agent_texts})
     return {agent_text: count for agent_text, count in res}
             
             
