@@ -1,6 +1,14 @@
-__all__ = ['get_stmts_with_agent_text_like', 'get_text_content_from_stmt_ids']
+__all__ = ['get_agent_texts_for_pmids',
+           'get_stmts_with_agent_text_like',
+           'get_text_content_from_stmt_ids',
+           'get_agent_stmt_counts',
+           'get_stmts_with_agent_text_in',
+           'get_text_content_from_pmids',
+           'get_text_content_from_stmt_ids',
+           'get_text_content_from_text_refs']
 
 from sqlalchemy import text
+from contextlib import closing
 from functools import lru_cache
 from collections import defaultdict, Counter
 
@@ -8,7 +16,7 @@ from .constructors import get_primary_db
 from .helpers import unpack, _get_trids
 
 
-def get_agent_texts_for_pmids(pmids, db=None):
+def get_agent_texts_for_pmids(pmids, open_db=None):
     """Return list of raw agent text extracted from a list of pmids
 
     Parameters
@@ -16,43 +24,48 @@ def get_agent_texts_for_pmids(pmids, db=None):
     pmids : list
         pmids as list of strings
 
+    open_db : Optional[callable]
+        Function that constructs a DatabaseManager. If None, uses
+        get_primary_db. Default: None
+
     Returns
     -------
     dict
         Dictionary giving counts of raw agent texts extracted from texts
         with the given pmids.
     """
-    if db is None:
-        db = get_primary_db()
-    pmids = tuple(pmids)
-    query = """
-            SELECT
-                tr.pmid, ARRAY_AGG(ra.db_id)
-            FROM
-                text_ref tr
-            JOIN
-                raw_stmt_ref_link link
-            ON
-                link.text_ref_id = tr.id
-            JOIN
-                raw_agents ra
-            ON
-                ra.stmt_id = link.stmt_id
-            WHERE
-                ra.db_name LIKE 'TEXT'
-            AND
-                ra.db_id IS NOT NULL
-            AND
-                tr.pmid IN :pmids
-            GROUP BY
-                pmid
-            """
-    res = db.session.execute(text(query), {'pmids': pmids})
+    if open_db is None:
+        open_db = get_primary_db
+    with closing(open_db()) as db:
+        pmids = tuple(pmids)
+        query = """
+                SELECT
+                    tr.pmid, ARRAY_AGG(ra.db_id)
+                FROM
+                    text_ref tr
+                JOIN
+                    raw_stmt_ref_link link
+                ON
+                    link.text_ref_id = tr.id
+                JOIN
+                    raw_agents ra
+                ON
+                    ra.stmt_id = link.stmt_id
+                WHERE
+                    ra.db_name LIKE 'TEXT'
+                AND
+                    ra.db_id IS NOT NULL
+                AND
+                    tr.pmid IN :pmids
+                GROUP BY
+                    pmid
+                """
+        res = db.session.execute(text(query), {'pmids': pmids})
     return {pmid: dict(Counter(agent_texts)) for pmid, agent_texts in res}
 
 
 def get_stmts_with_agent_text_like(pattern, filter_genes=False,
-                                   db=None):
+                                   open_db=None):
     """Get statement ids with agent with rawtext matching pattern
 
 
@@ -66,9 +79,9 @@ def get_stmts_with_agent_text_like(pattern, filter_genes=False,
        if True, only returns map for agent texts for which there is at least
        one HGNC grounding in the database. Default: False
 
-    db : Optional[:py:class:`DatabaseManager`]
-        User has the option to pass in a database manager. If None
-        the primary database is used. Default: None
+    open_db : Optional[callable]
+        Function that constructs a DatabaseManager. If None, uses
+        get_primary_db. Default: None
 
     Returns
     -------
@@ -78,30 +91,30 @@ def get_stmts_with_agent_text_like(pattern, filter_genes=False,
         statement ids for statements containing an agent with that TEXT
         in its db_refs
     """
-    if db is None:
-        db = get_primary_db()
-
-    # Query Raw agents table for agents with TEXT db_ref matching pattern
-    # Selects agent texts, statement ids and agent numbers. The agent number
-    # corresponds to the agents index into the agent list
-    agents = db.select_all([db.RawAgents.db_id,
-                            db.RawAgents.stmt_id,
-                            db.RawAgents.ag_num],
-                           db.RawAgents.db_name.like('TEXT'),
-                           db.RawAgents.db_id.like(pattern),
-                           db.RawAgents.stmt_id.isnot(None))
-    if filter_genes:
-        # If filtering to only genes, get statement ids and agent numbers
-        # for all agents grounded to HGNC. Check if agent text has been
-        # grounded to HGNC at least once
-        hgnc_agents = db.select_all([db.RawAgents.stmt_id,
-                                     db.RawAgents.ag_num],
-                                    db.RawAgents.db_name.like('HGNC'),
-                                    db.RawAgents.stmt_id.isnot(None))
-        hgnc_agents = set(hgnc_agents)
-        agents = [(agent_text, stmt_id, ag_num)
-                  for agent_text, stmt_id, ag_num in agents
-                  if (stmt_id, ag_num) in hgnc_agents]
+    if open_db is None:
+        open_db = get_primary_db
+    with closing(open_db()) as db:
+        # Query Raw agents table for agents with TEXT db_ref matching pattern
+        # Selects agent texts, statement ids and agent numbers. The agent number
+        # corresponds to the agents index into the agent list
+        agents = db.select_all([db.RawAgents.db_id,
+                                db.RawAgents.stmt_id,
+                                db.RawAgents.ag_num],
+                               db.RawAgents.db_name.like('TEXT'),
+                               db.RawAgents.db_id.like(pattern),
+                               db.RawAgents.stmt_id.isnot(None))
+        if filter_genes:
+            # If filtering to only genes, get statement ids and agent numbers
+            # for all agents grounded to HGNC. Check if agent text has been
+            # grounded to HGNC at least once
+            hgnc_agents = db.select_all([db.RawAgents.stmt_id,
+                                         db.RawAgents.ag_num],
+                                        db.RawAgents.db_name.like('HGNC'),
+                                        db.RawAgents.stmt_id.isnot(None))
+            hgnc_agents = set(hgnc_agents)
+            agents = [(agent_text, stmt_id, ag_num)
+                      for agent_text, stmt_id, ag_num in agents
+                      if (stmt_id, ag_num) in hgnc_agents]
     output = defaultdict(list)
     for agent_text, stmt_id, ag_num in agents:
         if stmt_id not in output[agent_text]:
@@ -109,32 +122,32 @@ def get_stmts_with_agent_text_like(pattern, filter_genes=False,
     return dict(output)
 
 
-def get_agent_stmt_counts(agent_texts, db=None):
-    if db is None:
-        db = get_primary_db()
-    agent_texts = tuple(set(agent_texts))
-    query = """
-            SELECT
-                db_id, Count(stmt_id)
-            FROM 
-                raw_agents
-            WHERE
-                db_name LIKE 'TEXT'
-            AND
-                db_id IN :agent_texts
-            AND
-                stmt_id IS NOT NULL
-            GROUP BY
-                db_id
-            """
-    res = db.session.execute(text(query), {'agent_texts': agent_texts})
+def get_agent_stmt_counts(agent_texts, open_db=None):
+    if open_db is None:
+        open_db = get_primary_db
+    with closing(open_db()) as db:
+        agent_texts = tuple(set(agent_texts))
+        query = """
+                SELECT
+                    db_id, Count(stmt_id)
+                FROM
+                    raw_agents
+                WHERE
+                    db_name LIKE 'TEXT'
+                AND
+                    db_id IN :agent_texts
+                AND
+                    stmt_id IS NOT NULL
+                GROUP BY
+                    db_id
+                """
+        res = db.session.execute(text(query), {'agent_texts': agent_texts})
     return {agent_text: count for agent_text, count in res}
-            
-            
-            
-def get_stmts_with_agent_text_in(agent_texts, filter_genes=False, db=None):
-    """Get statement ids with agent with rawtext in list
 
+
+def get_stmts_with_agent_text_in(agent_texts, filter_genes=False,
+                                 open_db=None):
+    """Get statement ids with agent with rawtext in list
 
     Parameters
     ----------
@@ -145,9 +158,9 @@ def get_stmts_with_agent_text_in(agent_texts, filter_genes=False, db=None):
         if True, only returns map for agent texts for which there is at least
         one HGNC grounding in the database. Default: False
 
-    db : Optional[:py:class:`DatabaseManager`]
-        User has the option to pass in a database manager. If None
-        the primary database is used. Default: None
+    open_db : Optional[callable]
+        Function that constructs a DatabaseManager. If None, uses
+        get_primary_db. Default: None
 
     Returns
     -------
@@ -155,32 +168,33 @@ def get_stmts_with_agent_text_in(agent_texts, filter_genes=False, db=None):
         dict mapping agent texts to lists of statement ids for statements
         containing an agent with that TEXT in its db_refs.
     """
-    if db is None:
-        db = get_primary_db()
+    if open_db is None:
+        open_db = get_primary_db
 
-    # Query Raw agents table for agents with TEXT db_ref matching pattern
-    # Selects agent texts, statement ids and agent numbers. The agent number
-    # corresponds to the agents index into the agent list
-    agents = db.select_all([db.RawAgents.db_id,
-                            db.RawAgents.stmt_id,
-                            db.RawAgents.ag_num],
-                           db.RawAgents.db_name.like('TEXT'),
-                           db.RawAgents.stmt_id.isnot(None))
-    agents = [(agent_text, stmt_id, ag_num)
-              for agent_text, stmt_id, ag_num in agents
-              if agent_text in agent_texts]
-    if filter_genes:
-        # If filtering to only genes, get statement ids and agent numbers
-        # for all agents grounded to HGNC. Check if agent text has been
-        # grounded to HGNC at least once
-        hgnc_agents = db.select_all([db.RawAgents.stmt_id,
-                                     db.RawAgents.ag_num],
-                                    db.RawAgents.db_name.like('HGNC'),
-                                    db.RawAgents.stmt_id.isnot(None))
-        hgnc_agents = set(hgnc_agents)
+    with closing(open_db()) as db:
+        # Query Raw agents table for agents with TEXT db_ref matching pattern
+        # Selects agent texts, statement ids and agent numbers. The agent number
+        # corresponds to the agents index into the agent list
+        agents = db.select_all([db.RawAgents.db_id,
+                                db.RawAgents.stmt_id,
+                                db.RawAgents.ag_num],
+                               db.RawAgents.db_name.like('TEXT'),
+                               db.RawAgents.stmt_id.isnot(None))
         agents = [(agent_text, stmt_id, ag_num)
                   for agent_text, stmt_id, ag_num in agents
-                  if (stmt_id, ag_num) in hgnc_agents]
+                  if agent_text in agent_texts]
+        if filter_genes:
+            # If filtering to only genes, get statement ids and agent numbers
+            # for all agents grounded to HGNC. Check if agent text has been
+            # grounded to HGNC at least once
+            hgnc_agents = db.select_all([db.RawAgents.stmt_id,
+                                         db.RawAgents.ag_num],
+                                        db.RawAgents.db_name.like('HGNC'),
+                                        db.RawAgents.stmt_id.isnot(None))
+            hgnc_agents = set(hgnc_agents)
+            agents = [(agent_text, stmt_id, ag_num)
+                      for agent_text, stmt_id, ag_num in agents
+                      if (stmt_id, ag_num) in hgnc_agents]
     output = defaultdict(list)
     for agent_text, stmt_id, ag_num in agents:
         if stmt_id not in output[agent_text]:
@@ -188,7 +202,7 @@ def get_stmts_with_agent_text_in(agent_texts, filter_genes=False, db=None):
     return dict(output)
 
 
-def get_text_content_from_stmt_ids(stmt_ids, db=None):
+def get_text_content_from_stmt_ids(stmt_ids):
     """Get text content for statements from a list of ids
 
     Gets the fulltext if it is available, even if the statement came from an
@@ -196,11 +210,7 @@ def get_text_content_from_stmt_ids(stmt_ids, db=None):
 
     Parameters
     ----------
-    stmt_ids : list of str
-
-    db : Optional[:py:class:`DatabaseManager`]
-        User has the option to pass in a database manager. If None
-        the primary database is used. Default: None
+    stmt_ids : list of ints
 
     Returns
     -------
@@ -216,8 +226,6 @@ def get_text_content_from_stmt_ids(stmt_ids, db=None):
         to best available text content. The order of preference is
         fulltext xml > plaintext abstract > title
     """
-    if db is None:
-        db = get_primary_db()
     identifiers = get_content_identifiers_from_stmt_ids(stmt_ids)
     content = _get_text_content(identifiers.values())
     return identifiers, content
@@ -233,10 +241,6 @@ def get_text_content_from_pmids(pmids, db=None):
     ----------
     pmids : list of str
 
-    db : Optional[:py:class:`DatabaseManager`]
-        User has the option to pass in a database manager. If None
-        the primary database is used. Default: None
-
     Returns
     -------
     identifiers : dict
@@ -251,14 +255,12 @@ def get_text_content_from_pmids(pmids, db=None):
         dict mapping content identifiers used as values in the ref_dict
         to the best available text content.
     """
-    if db is None:
-        db = get_primary_db()
     identifiers = get_content_identifiers_from_pmids(pmids)
     content = _get_text_content(identifiers.values())
     return identifiers, content
 
 
-def get_content_identifiers_from_stmt_ids(stmt_ids, db=None):
+def get_content_identifiers_from_stmt_ids(stmt_ids, open_db=None):
     """Get content identifiers for statements from a list of ids
 
     An identifier is a triple containing a text_ref_id, source, and text_type
@@ -269,9 +271,9 @@ def get_content_identifiers_from_stmt_ids(stmt_ids, db=None):
     ----------
     stmt_ids : list of str
 
-    db : Optional[:py:class:`DatabaseManager`]
-        User has the option to pass in a database manager. If None
-        the primary database is used. Default: None
+    open_db : Optional[callable]
+        Function that constructs a DatabaseManager. If None, uses
+        get_primary_db. Default: None
 
     Returns
     -------
@@ -281,28 +283,29 @@ def get_content_identifiers_from_stmt_ids(stmt_ids, db=None):
         No entries exist for statements with no associated text content
         (these typically come from databases)
     """
-    if db is None:
-        db = get_primary_db()
+    if open_db is None:
+        open_db = get_primary_db
     stmt_ids = tuple(set(stmt_ids))
-    query = """SELECT
-                   sub.stmt_id, tc.text_ref_id, tc.source,
-                   tc.format, tc.text_type
-               FROM
-                   text_content tc,
-                   (SELECT
-                        stmt_id, text_ref_id
-                    FROM
-                        raw_stmt_ref_link
+    with closing(open_db()) as db:
+        query = """SELECT
+                       sub.stmt_id, tc.text_ref_id, tc.source,
+                       tc.format, tc.text_type
+                   FROM
+                       text_content tc,
+                       (SELECT
+                            stmt_id, text_ref_id
+                        FROM
+                            raw_stmt_ref_link
+                        WHERE
+                            stmt_id IN :stmt_ids) sub
                     WHERE
-                        stmt_id IN :stmt_ids) sub
-                WHERE
-                    tc.text_ref_id = sub.text_ref_id
-            """
-    res = db.session.execute(text(query), {'stmt_ids': stmt_ids})
+                        tc.text_ref_id = sub.text_ref_id
+                """
+        res = db.session.execute(text(query), {'stmt_ids': stmt_ids})
     return _collect_content_identifiers(res)
 
 
-def get_content_identifiers_from_pmids(pmids, db=None):
+def get_content_identifiers_from_pmids(pmids, open_db=None):
     """Get content identifiers from list of pmids
 
     An identifier is a triple containing a text_ref_id, source, and text_type
@@ -313,9 +316,9 @@ def get_content_identifiers_from_pmids(pmids, db=None):
     ----------
     pmids : list of str
 
-    db : Optional[:py:class:`DatabaseManager`]
-        User has the option to pass in a database manager. If None
-        the primary is used. Default: None
+    open_db : Optional[callable]
+        Function that constructs a DatabaseManager. If None, uses
+        get_primary_db. Default: None
 
     Returns
     -------
@@ -331,21 +334,22 @@ def get_content_identifiers_from_pmids(pmids, db=None):
         to best available text content. The order of preference is
         fulltext xml > plaintext abstract > title
     """
-    if db is None:
-        db = get_primary_db()
+    if open_db is None:
+        open_db = get_primary_db
     pmids = tuple(set(pmids))
-    query = """SELECT
-                   tr.pmid, tr.id, tc.source, tc.format, tc.text_type
-               FROM
-                   text_content AS tc
-               JOIN
-                   text_ref as tr
-               ON
-                   tr.id = tc.text_ref_id
-               WHERE
-                   tr.pmid IN :pmids
-            """
-    res = db.session.execute(text(query), {'pmids': pmids})
+    with closing(open_db()) as db:
+        query = """SELECT
+                       tr.pmid, tr.id, tc.source, tc.format, tc.text_type
+                   FROM
+                       text_content AS tc
+                   JOIN
+                       text_ref as tr
+                   ON
+                       tr.id = tc.text_ref_id
+                   WHERE
+                       tr.pmid IN :pmids
+                """
+        res = db.session.execute(text(query), {'pmids': pmids})
     return _collect_content_identifiers(res)
 
 
@@ -369,7 +373,7 @@ def _collect_content_identifiers(res):
     return ref_dict
 
 
-def _get_text_content(content_identifiers, db=None):
+def _get_text_content(content_identifiers, open_db=None):
     """Return text_content associated to a list of content identifiers
 
     Parameters
@@ -380,9 +384,9 @@ def _get_text_content(content_identifiers, db=None):
         specify a piece of content in the database. content_identifiers
         is a list of these triples
 
-     db : Optional[:py:class:`DatabaseManager`]
-        User has the option to pass in a database manager. If None
-        the primary database is used. Default: None
+    open_db : Optional[callable]
+        Function that constructs a DatabaseManager. If None, uses
+        get_primary_db. Default: None
 
     Returns
     -------
@@ -393,46 +397,46 @@ def _get_text_content(content_identifiers, db=None):
     """
     if not content_identifiers:
         return {}
-    if db is None:
-        db = get_primary_db()
+    if open_db is None:
+        open_db = get_primary_db
     # Remove duplicate identifiers
     content_identifiers = set(content_identifiers)
     # Query finds content associated to each identifier by joining
     # the text_content table with a virtual table containing the
     # input identifiers. The query string is generated programmatically
-    id_str = ', '.join('(:trid%d, :source%d, :format%d, :text_type%d)'
-                       % (i, i, i, i)
-                       for i in range(len(content_identifiers)))
-    params = {}
-    for i, (trid, source,
-            format_, text_type) in enumerate(content_identifiers):
-        params.update({'trid%s' % i: trid,
-                       'source%i' % i: source,
-                       'format%i' % i: format_,
-                       'text_type%i' % i: text_type})
-    query = """SELECT
-                   tc.text_ref_id, tc.source, tc.format, tc.text_type, content
-               FROM
-                   text_content AS tc
-               JOIN (VALUES %s)
-               AS
-                  ids (text_ref_id, source, format, text_type)
-               ON
-                   tc.text_ref_id = ids.text_ref_id
-                   AND tc.source = ids.source
-                   AND tc.format = ids.format
-                   AND tc.text_type = ids.text_type
-               WHERE
-                   content IS NOT NULL
-            """ % id_str
-
-    res = db.session.execute(text(query), params)
+    with closing(open_db()) as db:
+        id_str = ', '.join('(:trid%d, :source%d, :format%d, :text_type%d)'
+                           % (i, i, i, i)
+                           for i in range(len(content_identifiers)))
+        params = {}
+        for i, (trid, source,
+                format_, text_type) in enumerate(content_identifiers):
+            params.update({'trid%s' % i: trid,
+                           'source%i' % i: source,
+                           'format%i' % i: format_,
+                           'text_type%i' % i: text_type})
+        query = """SELECT
+                       tc.text_ref_id, tc.source, tc.format, tc.text_type,
+                       content
+                   FROM
+                       text_content AS tc
+                   JOIN (VALUES %s)
+                   AS
+                      ids (text_ref_id, source, format, text_type)
+                   ON
+                       tc.text_ref_id = ids.text_ref_id
+                       AND tc.source = ids.source
+                       AND tc.format = ids.format
+                       AND tc.text_type = ids.text_type
+                   WHERE
+                       content IS NOT NULL
+                """ % id_str
+        res = db.session.execute(text(query), params)
     return {(trid, source, format, text_type): unpack(content)
             for trid, source, format, text_type, content in res}
 
 
-
-def get_text_content_from_text_refs(text_refs, db=None, use_cache=True):
+def get_text_content_from_text_refs(text_refs, open_db=None, use_cache=True):
     """Get text_content from an evidence object's text_refs attribute
 
 
@@ -443,9 +447,9 @@ def get_text_content_from_text_refs(text_refs, db=None, use_cache=True):
         The dictionary should be keyed on id_types. The valid keys
         are 'PMID', 'PMCID', 'DOI', 'PII', 'URL', 'MANUSCRIPT_ID'.
 
-    db : Optional[:py:class:`DatabaseManager`]
-        User has the option to pass in a database manager. If None
-        the primary database is used. Default: None
+    open_db : Optional[callable]
+        Function that constructs a DatabaseManager. If None, uses
+        get_primary_db. Default: None
 
     use_cache : Optional[bool]
         Whether or not to use cached results. Only relevant when
@@ -462,30 +466,31 @@ def get_text_content_from_text_refs(text_refs, db=None, use_cache=True):
         exists for the text_refs in the database
     """
     primary = False
-    if db is None:
-        db = get_primary_db()
+    if open_db is None:
+        open_db = get_primary_db
         primary = True
     if primary and use_cache:
         frozen_text_refs = frozenset(text_refs.items())
         result = _get_text_content_from_text_refs_cached(frozen_text_refs)
     else:
-        text_ref_id = _get_text_ref_id_from_text_refs(text_refs, db)
-        if text_ref_id is None:
-            result = None
-        else:
-            result = _get_text_content_from_trid(text_ref_id, db)
+        with closing(open_db()) as db:
+            text_ref_id = _get_text_ref_id_from_text_refs(text_refs, db)
+            if text_ref_id is None:
+                result = None
+            else:
+                result = _get_text_content_from_trid(text_ref_id, db)
     return result
 
 
 @lru_cache(10000)
 def _get_text_content_from_text_refs_cached(frozen_text_refs):
-    db = get_primary_db()
-    text_refs = dict(frozen_text_refs)
-    text_ref_id = _get_text_ref_id_from_text_refs(text_refs, db)
-    if text_ref_id is None:
-        result = None
-    else:
-        result = _get_text_content_from_trid(text_ref_id, db)
+    with closing(get_primary_db()) as db:
+        text_refs = dict(frozen_text_refs)
+        text_ref_id = _get_text_ref_id_from_text_refs(text_refs, db)
+        if text_ref_id is None:
+            result = None
+        else:
+            result = _get_text_content_from_trid(text_ref_id, db)
     return result
 
 
