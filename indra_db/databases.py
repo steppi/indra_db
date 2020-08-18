@@ -970,6 +970,11 @@ class DatabaseManager(object):
         self.grab_session()
         return dump_file
 
+    def close(self):
+        """Rollback and close session"""
+        self.session.rollback()
+        self.session.close()
+
 
 class PrincipalDatabaseManager(DatabaseManager):
     """This class represents the methods special to the principal database."""
