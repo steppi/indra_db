@@ -391,6 +391,8 @@ def _get_text_content(content_identifiers, db=None):
         text content. content identifiers for which no content
         exists in the database are excluded as keys.
     """
+    if not content_identifiers:
+        return {}
     if db is None:
         db = get_primary_db()
     # Remove duplicate identifiers
